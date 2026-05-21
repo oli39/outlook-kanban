@@ -182,18 +182,57 @@ function loadStateLocal(){
 
 // ── Speichern (SharePoint + lokaler Fallback) ────────────────
 async function saveState(){
-  const data=cards.map(c=>({id:c.id,col:c.col,ampel:c.ampel}));
+  var data=cards.map(function(c){return {id:c.id,col:c.col,ampel:c.ampel,subj:c.subj,from:c.from,unread:c.unread,time:c.time};});
   saveStateLocal(data);
-  await saveStateToSharePoint(data);
+  try{ await saveStateToSharePoint(data); }catch(e){}
 }
 
 // ── Outlook JS API ───────────────────────────────────────────
 Office.onReady(async function(info){
-  try {
-    await loadFolders();
-    await loadMails();
-  } catch(e){
-    setStatus('Fehler: ' + e.message, 'error');
+  var saved = loadStateLocal();
+  var savedMap = {};
+  if(saved) saved.forEach(function(c){ savedMap[c.id]={col:c.col,ampel:c.ampel}; });
+
+  folders = ['Archiv','Kunden','Projekte','Rechnungen'];
+
+  if(Office.context && Office.context.mailbox){
+    // Geöffnete Mail direkt lesen
+    var item = Office.context.mailbox.item;
+    if(item){
+      item.from.getAsync(function(fromResult){
+        var from = fromResult.value ? fromResult.value.emailAddress : '';
+        var subj = item.subject || '(kein Betreff)';
+        var id = item.itemId || ('local_'+Date.now());
+        var existing = saved ? saved.find(function(c){ return c.id===id; }) : null;
+        // Nur hinzufügen wenn noch nicht im Board
+        if(saved){
+          cards = saved.map(function(c){
+            return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col,ampel:c.ampel};
+          });
+        }
+        if(!existing && id){
+          var newCard = {
+            id: id, changeKey: '',
+            subj: subj, from: from,
+            unread: true, time: 'Gerade',
+            col: 'backlog', ampel: 'a-green'
+          };
+          if(!cards.find(function(c){return c.id===id;})){
+            cards.unshift(newCard);
+            saveState();
+          }
+        }
+        setStatus(cards.length + ' Mails im Board', '');
+        render();
+      });
+    } else {
+      if(saved){ cards=saved.map(function(c){return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col,ampel:c.ampel};}); }
+      setStatus(cards.length + ' Mails im Board', '');
+      render();
+    }
+  } else {
+    if(saved){ cards=saved.map(function(c){return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col,ampel:c.ampel};}); }
+    setStatus('', '');
     render();
   }
 });
@@ -311,24 +350,11 @@ function formatDate(d){
   return d.toLocaleDateString('de-CH',{day:'2-digit',month:'2-digit'})+', '+d.toLocaleTimeString('de-CH',{hour:'2-digit',minute:'2-digit'});
 }
 
-async function openMailInOutlook(id){
-  const c=cards.find(c=>c.id===id);
+function openMailInOutlook(id){
+  var c=cards.find(function(c){return c.id===id;});
   if(!c||!c.id) return;
-  if(c.unread){
-    try{
-      const token=await getRestToken();
-      const restUrl=Office.context.mailbox.restUrl;
-      await fetch(restUrl+'/v2.0/me/messages/'+c.id, {
-        method:'PATCH',
-        headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-        body:JSON.stringify({isRead:true})
-      });
-    }catch(e){}
-    c.unread=false;
-    saveState();
-    render();
-  }
-  Office.context.mailbox.displayMessageForm(c.id);
+  if(c.unread){ c.unread=false; saveState(); render(); }
+  try{ Office.context.mailbox.displayMessageForm(c.id); }catch(e){}
 }
 
 async function moveFolderOutlook(id,folderName){
