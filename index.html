@@ -195,46 +195,38 @@ Office.onReady(async function(info){
 
   folders = ['Archiv','Kunden','Projekte','Rechnungen'];
 
-  if(Office.context && Office.context.mailbox){
-    // Geöffnete Mail direkt lesen
-    var item = Office.context.mailbox.item;
-    if(item){
-      item.from.getAsync(function(fromResult){
-        var from = fromResult.value ? fromResult.value.emailAddress : '';
-        var subj = item.subject || '(kein Betreff)';
-        var id = item.itemId || ('local_'+Date.now());
-        var existing = saved ? saved.find(function(c){ return c.id===id; }) : null;
-        // Nur hinzufügen wenn noch nicht im Board
-        if(saved){
-          cards = saved.map(function(c){
-            return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col,ampel:c.ampel};
-          });
-        }
-        if(!existing && id){
-          var newCard = {
-            id: id, changeKey: '',
-            subj: subj, from: from,
-            unread: true, time: 'Gerade',
-            col: 'backlog', ampel: 'a-green'
-          };
-          if(!cards.find(function(c){return c.id===id;})){
-            cards.unshift(newCard);
-            saveState();
-          }
-        }
-        setStatus(cards.length + ' Mails im Board', '');
-        render();
-      });
-    } else {
-      if(saved){ cards=saved.map(function(c){return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col,ampel:c.ampel};}); }
-      setStatus(cards.length + ' Mails im Board', '');
-      render();
-    }
-  } else {
-    if(saved){ cards=saved.map(function(c){return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col,ampel:c.ampel};}); }
-    setStatus('', '');
-    render();
+  // Gespeicherte Karten laden
+  if(saved){
+    cards = saved.map(function(c){
+      return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col,ampel:c.ampel};
+    });
   }
+
+  if(Office.context && Office.context.mailbox && Office.context.mailbox.item){
+    var item = Office.context.mailbox.item;
+    var subj = item.subject || '(kein Betreff)';
+    var id = item.itemId || ('local_'+Date.now());
+
+    // Mail direkt hinzufügen ohne async
+    if(id && !cards.find(function(c){return c.id===id;})){
+      cards.unshift({
+        id:id, changeKey:'', subj:subj, from:'',
+        unread:true, time:'Gerade', col:'backlog', ampel:'a-green'
+      });
+      // Absender async nachladen
+      try{
+        item.from.getAsync(function(r){
+          var c=cards.find(function(x){return x.id===id;});
+          if(c&&r.value) c.from=r.value.emailAddress||r.value.displayName||'';
+          saveState();
+          render();
+        });
+      }catch(e){}
+    }
+  }
+
+  setStatus(cards.length + ' Mails im Board', '');
+  render();
 });
 
 function setStatus(msg,type){
