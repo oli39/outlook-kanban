@@ -206,90 +206,67 @@ function setStatus(msg,type){
 
 async function loadFolders(){
   try{
-    await new Promise((res)=>{
-      Office.context.mailbox.makeEwsRequestAsync(
-        `<?xml version="1.0" encoding="utf-8"?>
-        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-          xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
-          <soap:Body>
-            <FindFolder xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" Traversal="Shallow">
-              <FolderShape><t:BaseShape>AllProperties</t:BaseShape></FolderShape>
-              <ParentFolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></ParentFolderIds>
-            </FindFolder>
-          </soap:Body>
-        </soap:Envelope>`,
-        function(result){
-          if(result.status===Office.AsyncResultStatus.Succeeded){
-            const xml=new DOMParser().parseFromString(result.value,'text/xml');
-            const names=Array.from(xml.querySelectorAll('DisplayName')).map(n=>n.textContent);
-            folders=names.filter(n=>n&&!['Posteingang','Gesendete Elemente','Gelöschte Elemente','Entwürfe','Junk-E-Mail','Kalender','Kontakte'].includes(n)).slice(0,8);
-          }
-          res();
-        }
-      );
+    const token = await getRestToken();
+    const restUrl = Office.context.mailbox.restUrl;
+    const res = await fetch(restUrl+'/v2.0/me/mailFolders?$top=20', {
+      headers:{Authorization:'Bearer '+token}
     });
+    if(res.ok){
+      const data = await res.json();
+      const skip = ['Posteingang','Gesendete Elemente','Gelöschte Elemente','Entwürfe','Junk-E-Mail','Kalender','Kontakte','Inbox','Sent Items','Deleted Items','Drafts','Junk Email'];
+      folders = (data.value||[]).map(f=>f.displayName).filter(n=>!skip.includes(n)).slice(0,8);
+    }
   }catch(e){}
   if(!folders.length) folders=['Archiv','Kunden','Projekte','Rechnungen'];
 }
 
-async function loadMails(){
-  setStatus('Status wird geladen…','loading');
+async function getRestToken(){
+  return new Promise((res,rej)=>{
+    Office.context.mailbox.getCallbackTokenAsync({isRest:true}, result=>{
+      if(result.status===Office.AsyncResultStatus.Succeeded) res(result.value);
+      else rej(result.error);
+    });
+  });
+}
 
-  // Zuerst gespeicherter Zustand laden (SharePoint, dann lokaler Fallback)
+async function loadMails(){
+  setStatus('Mails werden geladen…','loading');
   let saved = await loadStateFromSharePoint();
   if(!saved) saved = loadStateLocal();
   const savedMap={};
   if(saved) saved.forEach(c=>{ savedMap[c.id]={col:c.col,ampel:c.ampel}; });
 
-  setStatus('Mails werden geladen…','loading');
-
   try{
-    await new Promise((res,rej)=>{
-      Office.context.mailbox.makeEwsRequestAsync(
-        `<?xml version="1.0" encoding="utf-8"?>
-        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-          xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
-          xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
-          <soap:Body>
-            <m:FindItem Traversal="Shallow">
-              <m:ItemShape><t:BaseShape>AllProperties</t:BaseShape></m:ItemShape>
-              <m:IndexedPageItemView MaxEntriesReturned="50" Offset="0" BasePoint="Beginning"/>
-              <m:ParentFolderIds><t:DistinguishedFolderId Id="inbox"/></m:ParentFolderIds>
-            </m:FindItem>
-          </soap:Body>
-        </soap:Envelope>`,
-        function(result){
-          if(result.status!==Office.AsyncResultStatus.Succeeded){
-            setStatus('Fehler beim Laden','error');
-            if(saved){cards=saved;render();}
-            rej(); return;
-          }
-          const xml=new DOMParser().parseFromString(result.value,'text/xml');
-          const items=Array.from(xml.querySelectorAll('Message'));
-          const fetched=items.map(item=>{
-            const id=item.querySelector('ItemId')?.getAttribute('Id')||'';
-            const changeKey=item.querySelector('ItemId')?.getAttribute('ChangeKey')||'';
-            const subj=item.querySelector('Subject')?.textContent||'(kein Betreff)';
-            const from=item.querySelector('EmailAddress')?.textContent||'';
-            const dateStr=item.querySelector('DateTimeReceived')?.textContent||'';
-            const unread=item.querySelector('IsRead')?.textContent==='false';
-            const date=dateStr?new Date(dateStr):new Date();
-            return {id,changeKey,subj,from,unread,date,time:formatDate(date)};
-          });
-          cards=fetched.map(m=>({
-            ...m,
-            col:savedMap[m.id]?.col||'backlog',
-            ampel:savedMap[m.id]?.ampel||'a-green',
-          }));
-          setStatus(`${cards.length} Mails geladen`,'');
-          render();
-          res();
-        }
-      );
-    });
+    const token = await getRestToken();
+    const restUrl = Office.context.mailbox.restUrl;
+    const res = await fetch(
+      restUrl+'/v2.0/me/mailFolders/inbox/messages?$top=50&$orderby=receivedDateTime desc&$select=id,subject,from,receivedDateTime,isRead',
+      {headers:{Authorization:'Bearer '+token}}
+    );
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+    cards = (data.value||[]).map(m=>({
+      id: m.id,
+      changeKey: '',
+      subj: m.subject||'(kein Betreff)',
+      from: m.from&&m.from.emailAddress?m.from.emailAddress.address:'',
+      unread: !m.isRead,
+      date: new Date(m.receivedDateTime),
+      time: formatDate(new Date(m.receivedDateTime)),
+      col: savedMap[m.id]?.col||'backlog',
+      ampel: savedMap[m.id]?.ampel||'a-green',
+    }));
+    setStatus(cards.length+' Mails geladen','');
+    render();
   }catch(e){
-    if(saved&&saved.length>0){cards=saved;render();}
-    else{setStatus('Mails konnten nicht geladen werden – bitte aktualisieren','error');render();}
+    if(saved&&saved.length>0){
+      cards=saved.map(c=>({...c,subj:c.subj||'(gespeichert)',from:c.from||'',time:c.time||''}));
+      setStatus('Gespeicherter Zustand','');
+      render();
+    } else {
+      setStatus('Fehler: '+e.message,'error');
+      render();
+    }
   }
 }
 
@@ -300,30 +277,19 @@ function formatDate(d){
   return d.toLocaleDateString('de-CH',{day:'2-digit',month:'2-digit'})+', '+d.toLocaleTimeString('de-CH',{hour:'2-digit',minute:'2-digit'});
 }
 
-function openMailInOutlook(id){
+async function openMailInOutlook(id){
   const c=cards.find(c=>c.id===id);
   if(!c||!c.id) return;
   if(c.unread){
-    Office.context.mailbox.makeEwsRequestAsync(
-      `<?xml version="1.0" encoding="utf-8"?>
-      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-        xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
-        xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
-        <soap:Body>
-          <m:UpdateItem MessageDisposition="SaveOnly" ConflictResolution="AutoResolve">
-            <m:ItemChanges>
-              <t:ItemChange>
-                <t:ItemId Id="${c.id}" ChangeKey="${c.changeKey}"/>
-                <t:Updates><t:SetItemField>
-                  <t:FieldURI FieldURI="message:IsRead"/>
-                  <t:Message><t:IsRead>true</t:IsRead></t:Message>
-                </t:SetItemField></t:Updates>
-              </t:ItemChange>
-            </m:ItemChanges>
-          </m:UpdateItem>
-        </soap:Body>
-      </soap:Envelope>`,()=>{}
-    );
+    try{
+      const token=await getRestToken();
+      const restUrl=Office.context.mailbox.restUrl;
+      await fetch(restUrl+'/v2.0/me/messages/'+c.id, {
+        method:'PATCH',
+        headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+        body:JSON.stringify({isRead:true})
+      });
+    }catch(e){}
     c.unread=false;
     saveState();
     render();
@@ -331,73 +297,57 @@ function openMailInOutlook(id){
   Office.context.mailbox.displayMessageForm(c.id);
 }
 
-function moveFolderOutlook(id,folderName){
+async function moveFolderOutlook(id,folderName){
   const c=cards.find(c=>c.id===id);
-  if(!c||!c.id){cards=cards.filter(x=>x.id!==id);saveState();render();toast(`In „${folderName}" verschoben`);return;}
-  Office.context.mailbox.makeEwsRequestAsync(
-    `<?xml version="1.0" encoding="utf-8"?>
-    <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-      xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
-      xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
-      <soap:Body>
-        <m:MoveItem>
-          <m:ToFolderId><t:FolderName>${folderName}</t:FolderName></m:ToFolderId>
-          <m:ItemIds><t:ItemId Id="${c.id}" ChangeKey="${c.changeKey}"/></m:ItemIds>
-        </m:MoveItem>
-      </soap:Body>
-    </soap:Envelope>`,
-    function(){cards=cards.filter(x=>x.id!==id);saveState();render();toast(`In „${folderName}" verschoben`);}
-  );
+  cards=cards.filter(x=>x.id!==id);
+  saveState();render();toast('In „'+folderName+'" verschoben');
+  try{
+    const token=await getRestToken();
+    const restUrl=Office.context.mailbox.restUrl;
+    const fres=await fetch(restUrl+'/v2.0/me/mailFolders?$top=50',{headers:{Authorization:'Bearer '+token}});
+    const fdata=await fres.json();
+    const folder=(fdata.value||[]).find(f=>f.displayName===folderName);
+    if(folder){
+      await fetch(restUrl+'/v2.0/me/messages/'+c.id+'/move',{
+        method:'POST',
+        headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+        body:JSON.stringify({destinationId:folder.id})
+      });
+    }
+  }catch(e){}
 }
 
-function deleteMailOutlook(id){
+async function deleteMailOutlook(id){
   const c=cards.find(c=>c.id===id);
-  if(!c||!c.id){cards=cards.filter(x=>x.id!==id);saveState();render();toast('Mail gelöscht');return;}
-  Office.context.mailbox.makeEwsRequestAsync(
-    `<?xml version="1.0" encoding="utf-8"?>
-    <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-      xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
-      xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
-      <soap:Body>
-        <m:DeleteItem DeleteType="MoveToDeletedItems">
-          <m:ItemIds><t:ItemId Id="${c.id}" ChangeKey="${c.changeKey}"/></m:ItemIds>
-        </m:DeleteItem>
-      </soap:Body>
-    </soap:Envelope>`,
-    function(){cards=cards.filter(x=>x.id!==id);saveState();render();toast('Mail gelöscht');}
-  );
+  cards=cards.filter(x=>x.id!==id);
+  saveState();render();toast('Mail gelöscht');
+  try{
+    const token=await getRestToken();
+    const restUrl=Office.context.mailbox.restUrl;
+    await fetch(restUrl+'/v2.0/me/messages/'+c.id,{
+      method:'DELETE',
+      headers:{Authorization:'Bearer '+token}
+    });
+  }catch(e){}
 }
 
-function markUnreadOutlook(id,unread){
+async function markUnreadOutlook(id,unread){
   const c=cards.find(c=>c.id===id);
   if(!c) return;
-  if(c.id){
-    Office.context.mailbox.makeEwsRequestAsync(
-      `<?xml version="1.0" encoding="utf-8"?>
-      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-        xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
-        xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
-        <soap:Body>
-          <m:UpdateItem MessageDisposition="SaveOnly" ConflictResolution="AutoResolve">
-            <m:ItemChanges>
-              <t:ItemChange>
-                <t:ItemId Id="${c.id}" ChangeKey="${c.changeKey}"/>
-                <t:Updates><t:SetItemField>
-                  <t:FieldURI FieldURI="message:IsRead"/>
-                  <t:Message><t:IsRead>${unread?'false':'true'}</t:IsRead></t:Message>
-                </t:SetItemField></t:Updates>
-              </t:ItemChange>
-            </m:ItemChanges>
-          </m:UpdateItem>
-        </soap:Body>
-      </soap:Envelope>`,()=>{}
-    );
-  }
   c.unread=unread;
   openMenu=null;
   saveState();
   render();
   toast(unread?'Als ungelesen markiert':'Als gelesen markiert');
+  try{
+    const token=await getRestToken();
+    const restUrl=Office.context.mailbox.restUrl;
+    await fetch(restUrl+'/v2.0/me/messages/'+c.id,{
+      method:'PATCH',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({isRead:!unread})
+    });
+  }catch(e){}
 }
 
 function loadDemoCards(){
