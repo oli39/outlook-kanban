@@ -185,13 +185,19 @@ async function saveState(){
 
 // ── Outlook JS API ───────────────────────────────────────────
 Office.onReady(async function(info){
-  if(info.host===Office.HostType.Outlook || Office.context?.mailbox){
+  if(Office.context && Office.context.mailbox){
     await loadFolders();
     await loadMails();
   } else {
-    setStatus('Testmodus','');
-    loadDemoCards();
-    render();
+    setTimeout(async function(){
+      if(Office.context && Office.context.mailbox){
+        await loadFolders();
+        await loadMails();
+      } else {
+        setStatus('','');
+        render();
+      }
+    }, 1500);
   }
 });
 
