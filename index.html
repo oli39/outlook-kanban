@@ -72,8 +72,7 @@
     .check{font-size:10px;color:var(--txt3);margin-left:auto}
     .drop-ind{height:2px;border-radius:1px;background:var(--accent);margin-bottom:6px;opacity:0;transition:opacity .1s}
     .drop-ind.visible{opacity:1}
-    .folder-sub{display:none;background:var(--bg2);border-top:0.5px solid var(--brd);border-bottom:0.5px solid var(--brd);margin:2px 0}
-    .folder-sub.open{display:block}
+
     .toast{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#1c1c1e;color:#fff;font-size:11px;padding:5px 12px;border-radius:7px;z-index:999;transition:opacity .3s;pointer-events:none;opacity:0}
     .toast.show{opacity:1}
   </style>
@@ -195,23 +194,22 @@ Office.onReady(async function(info){
 
   folders = ['Archiv','Kunden','Projekte','Rechnungen'];
 
-  // Gespeicherte Karten laden
-  if(saved){
-    cards = saved.map(function(c){
-      return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col,ampel:c.ampel};
-    });
-  }
+  // Gespeicherte Karten laden – IMMER zuerst
+  var existingCards = saved ? saved.map(function(c){
+    return {id:c.id,changeKey:'',subj:c.subj||'',from:c.from||'',unread:c.unread||false,time:c.time||'',col:c.col||'backlog',ampel:c.ampel||'a-green'};
+  }) : [];
+  cards = existingCards;
 
   if(Office.context && Office.context.mailbox && Office.context.mailbox.item){
     var item = Office.context.mailbox.item;
     var subj = item.subject || '(kein Betreff)';
-    var id = item.itemId || ('local_'+Date.now());
+    var id = item.itemId || null;
 
-    // Mail direkt hinzufügen ohne async
+    // Neue Mail nur hinzufügen wenn noch nicht im Board
     if(id && !cards.find(function(c){return c.id===id;})){
       cards.unshift({
         id:id, changeKey:'', subj:subj, from:'',
-        unread:true, time:'Gerade', col:'backlog', ampel:'a-green'
+        unread:true, time:'Heute', col:'backlog', ampel:'a-green'
       });
       // Absender async nachladen
       try{
@@ -349,25 +347,7 @@ function openMailInOutlook(id){
   try{ Office.context.mailbox.displayMessageForm(c.id); }catch(e){}
 }
 
-async function moveFolderOutlook(id,folderName){
-  const c=cards.find(c=>c.id===id);
-  cards=cards.filter(x=>x.id!==id);
-  saveState();render();toast('In „'+folderName+'" verschoben');
-  try{
-    const token=await getRestToken();
-    const restUrl=Office.context.mailbox.restUrl;
-    const fres=await fetch(restUrl+'/v2.0/me/mailFolders?$top=50',{headers:{Authorization:'Bearer '+token}});
-    const fdata=await fres.json();
-    const folder=(fdata.value||[]).find(f=>f.displayName===folderName);
-    if(folder){
-      await fetch(restUrl+'/v2.0/me/messages/'+c.id+'/move',{
-        method:'POST',
-        headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-        body:JSON.stringify({destinationId:folder.id})
-      });
-    }
-  }catch(e){}
-}
+
 
 async function deleteMailOutlook(id){
   const c=cards.find(c=>c.id===id);
@@ -444,10 +424,7 @@ function render(){
           </div>
           <div class="ctx-divider"></div>
           <div class="ctx-section">Erledigt</div>
-          <div class="ctx-item" onclick="toggleFolderSub('${c.id}',event)">
-            📁 In Ordner verschieben <span class="check" id="fa-${c.id}">›</span>
-          </div>
-          <div class="folder-sub" id="fs-${c.id}">${folderItems}</div>
+
           <div class="ctx-item danger" onclick="deleteMailOutlook('${c.id}')">🗑 Löschen</div>
         </div>`;
       card.addEventListener('dblclick',e=>{e.stopPropagation();openMailInOutlook(c.id);});
@@ -468,15 +445,7 @@ function render(){
 }
 
 function toggleMenu(id,e){e.stopPropagation();openMenu=openMenu===id?null:id;render();}
-function toggleFolderSub(id,e){
-  e.stopPropagation();
-  const sub=document.getElementById('fs-'+id);
-  const arrow=document.getElementById('fa-'+id);
-  if(!sub) return;
-  const open=sub.classList.contains('open');
-  sub.classList.toggle('open',!open);
-  if(arrow) arrow.textContent=open?'›':'‹';
-}
+
 function setAmpel(id,cls){const c=cards.find(c=>c.id===id);if(c){c.ampel=cls;openMenu=null;saveState();render();}}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),1800);}
 document.addEventListener('click',()=>{if(openMenu!==null){openMenu=null;render();}});
