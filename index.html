@@ -206,16 +206,28 @@ function setStatus(msg,type){
 
 async function loadFolders(){
   try{
-    const token = await getRestToken();
-    const restUrl = Office.context.mailbox.restUrl;
-    const res = await fetch(restUrl+'/v2.0/me/mailFolders?$top=20', {
-      headers:{Authorization:'Bearer '+token}
+    await new Promise(function(res){
+      Office.context.mailbox.makeEwsRequestAsync(
+        '<?xml version="1.0" encoding="utf-8"?>' +
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"' +
+        ' xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">' +
+        '<soap:Body>' +
+        '<FindFolder xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" Traversal="Shallow">' +
+        '<FolderShape><t:BaseShape>AllProperties</t:BaseShape></FolderShape>' +
+        '<ParentFolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></ParentFolderIds>' +
+        '</FindFolder>' +
+        '</soap:Body></soap:Envelope>',
+        function(result){
+          if(result.status===Office.AsyncResultStatus.Succeeded){
+            var xml=new DOMParser().parseFromString(result.value,'text/xml');
+            var names=Array.from(xml.querySelectorAll('DisplayName')).map(function(n){return n.textContent;});
+            var skip=['Posteingang','Gesendete Elemente','Gelöschte Elemente','Entwürfe','Junk-E-Mail','Kalender','Kontakte'];
+            folders=names.filter(function(n){return n&&!skip.includes(n);}).slice(0,8);
+          }
+          res();
+        }
+      );
     });
-    if(res.ok){
-      const data = await res.json();
-      const skip = ['Posteingang','Gesendete Elemente','Gelöschte Elemente','Entwürfe','Junk-E-Mail','Kalender','Kontakte','Inbox','Sent Items','Deleted Items','Drafts','Junk Email'];
-      folders = (data.value||[]).map(f=>f.displayName).filter(n=>!skip.includes(n)).slice(0,8);
-    }
   }catch(e){}
   if(!folders.length) folders=['Archiv','Kunden','Projekte','Rechnungen'];
 }
@@ -224,7 +236,7 @@ async function getRestToken(){
   return new Promise((res,rej)=>{
     Office.context.mailbox.getCallbackTokenAsync({isRest:true}, result=>{
       if(result.status===Office.AsyncResultStatus.Succeeded) res(result.value);
-      else rej(result.error);
+      else rej(new Error(result.error ? result.error.message : 'Token fehlgeschlagen'));
     });
   });
 }
@@ -237,27 +249,49 @@ async function loadMails(){
   if(saved) saved.forEach(c=>{ savedMap[c.id]={col:c.col,ampel:c.ampel}; });
 
   try{
-    const token = await getRestToken();
-    const restUrl = Office.context.mailbox.restUrl;
-    const res = await fetch(
-      restUrl+'/v2.0/me/mailFolders/inbox/messages?$top=50&$orderby=receivedDateTime desc&$select=id,subject,from,receivedDateTime,isRead',
-      {headers:{Authorization:'Bearer '+token}}
-    );
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const data = await res.json();
-    cards = (data.value||[]).map(m=>({
-      id: m.id,
-      changeKey: '',
-      subj: m.subject||'(kein Betreff)',
-      from: m.from&&m.from.emailAddress?m.from.emailAddress.address:'',
-      unread: !m.isRead,
-      date: new Date(m.receivedDateTime),
-      time: formatDate(new Date(m.receivedDateTime)),
-      col: savedMap[m.id]?.col||'backlog',
-      ampel: savedMap[m.id]?.ampel||'a-green',
-    }));
-    setStatus(cards.length+' Mails geladen','');
-    render();
+    await new Promise((res,rej)=>{
+      Office.context.mailbox.makeEwsRequestAsync(
+        '<?xml version="1.0" encoding="utf-8"?>' +
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"' +
+        ' xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"' +
+        ' xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">' +
+        '<soap:Body>' +
+        '<m:FindItem Traversal="Shallow">' +
+        '<m:ItemShape><t:BaseShape>AllProperties</t:BaseShape></m:ItemShape>' +
+        '<m:IndexedPageItemView MaxEntriesReturned="50" Offset="0" BasePoint="Beginning"/>' +
+        '<m:SortOrder><t:FieldOrder Order="Descending"><t:FieldURI FieldURI="item:DateTimeReceived"/></t:FieldOrder></m:SortOrder>' +
+        '<m:ParentFolderIds><t:DistinguishedFolderId Id="inbox"/></m:ParentFolderIds>' +
+        '</m:FindItem>' +
+        '</soap:Body></soap:Envelope>',
+        function(result){
+          if(result.status!==Office.AsyncResultStatus.Succeeded){
+            rej(new Error('EWS Fehler: '+result.error.message)); return;
+          }
+          var xml=new DOMParser().parseFromString(result.value,'text/xml');
+          var items=Array.from(xml.querySelectorAll('Message'));
+          var fetched=items.map(function(item){
+            var id=item.querySelector('ItemId') ? item.querySelector('ItemId').getAttribute('Id') : '';
+            var ck=item.querySelector('ItemId') ? item.querySelector('ItemId').getAttribute('ChangeKey') : '';
+            var subj=item.querySelector('Subject') ? item.querySelector('Subject').textContent : '(kein Betreff)';
+            var fromEl=item.querySelector('From EmailAddress') || item.querySelector('EmailAddress');
+            var from=fromEl ? fromEl.textContent : '';
+            var dateStr=item.querySelector('DateTimeReceived') ? item.querySelector('DateTimeReceived').textContent : '';
+            var unread=item.querySelector('IsRead') ? item.querySelector('IsRead').textContent==='false' : false;
+            var date=dateStr ? new Date(dateStr) : new Date();
+            return {id:id,changeKey:ck,subj:subj,from:from,unread:unread,date:date,time:formatDate(date)};
+          });
+          cards=fetched.map(function(m){
+            return Object.assign({},m,{
+              col:savedMap[m.id] ? savedMap[m.id].col : 'backlog',
+              ampel:savedMap[m.id] ? savedMap[m.id].ampel : 'a-green',
+            });
+          });
+          setStatus(cards.length+' Mails geladen','');
+          render();
+          res();
+        }
+      );
+    });
   }catch(e){
     if(saved&&saved.length>0){
       cards=saved.map(c=>({...c,subj:c.subj||'(gespeichert)',from:c.from||'',time:c.time||''}));
