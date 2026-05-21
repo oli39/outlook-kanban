@@ -185,19 +185,12 @@ async function saveState(){
 
 // ── Outlook JS API ───────────────────────────────────────────
 Office.onReady(async function(info){
-  if(Office.context && Office.context.mailbox){
+  try {
     await loadFolders();
     await loadMails();
-  } else {
-    setTimeout(async function(){
-      if(Office.context && Office.context.mailbox){
-        await loadFolders();
-        await loadMails();
-      } else {
-        setStatus('','');
-        render();
-      }
-    }, 1500);
+  } catch(e){
+    setStatus('Fehler: ' + e.message, 'error');
+    render();
   }
 });
 
