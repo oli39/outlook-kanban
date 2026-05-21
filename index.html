@@ -185,7 +185,7 @@ async function saveState(){
 
 // ── Outlook JS API ───────────────────────────────────────────
 Office.onReady(async function(info){
-  if(info.host===Office.HostType.Outlook){
+  if(info.host===Office.HostType.Outlook || Office.context?.mailbox){
     await loadFolders();
     await loadMails();
   } else {
@@ -398,13 +398,7 @@ function markUnreadOutlook(id,unread){
 }
 
 function loadDemoCards(){
-  cards=[
-    {id:'d1',changeKey:'',col:'backlog',ampel:'a-red',unread:true,from:'kunde@beispiel.ch',subj:'Offerte dringend benötigt',time:'Heute, 08:14'},
-    {id:'d2',changeKey:'',col:'backlog',ampel:'a-amber',unread:true,from:'lieferant@firma.de',subj:'Rechnung März ausstehend',time:'Heute, 07:52'},
-    {id:'d3',changeKey:'',col:'backlog',ampel:'a-green',unread:false,from:'newsletter@verband.ch',subj:'Veranstaltungshinweis Mai',time:'Gestern, 16:30'},
-    {id:'d4',changeKey:'',col:'todo',ampel:'a-red',unread:true,from:'direktion@schule.ch',subj:'Antwort bis Freitag erbeten',time:'Mo, 09:00'},
-    {id:'d5',changeKey:'',col:'inprog',ampel:'a-red',unread:false,from:'partner@xyz.com',subj:'Vertrag Entwurf v2 prüfen',time:'Fr, 11:20'},
-  ];
+  cards=[];
   if(!folders.length) folders=['Archiv','Kunden','Projekte','Rechnungen'];
   setStatus('Testmodus – keine Outlook-Verbindung','');
 }
